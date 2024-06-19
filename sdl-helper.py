@@ -3,8 +3,15 @@ import openai
 from azure.cognitiveservices.vision.computervision import ComputerVisionClient
 from azure.cognitiveservices.vision.computervision.models import OperationStatusCodes
 from azure.cognitiveservices.vision.computervision.models import VisualFeatureTypes
-from msrest.authentication import CognitiveServicesCredentials
+from azure.core.credentials import AzureKeyCredential  
+from msrest.authentication import CognitiveServicesCredentials  
+from azure.search.documents import SearchClient
 from dotenv import load_dotenv  
+import os  
+from azure.identity import DefaultAzureCredential  
+from azure.mgmt.resourcegraph import ResourceGraphClient  
+from azure.mgmt.resourcegraph.models import QueryRequest  
+
 
 from array import array
 import os
@@ -55,7 +62,7 @@ def extract_text_from_image(computervision_client, imageFilePath):
   
 def generate_list_of_services(text, openai_endpoint, openai_api_key, openai_api_version, deployment):    
     recommendations = []    
-    prompt = f"Prompt 1: You are a Microsoft Azure security engineer doing threat model analysis to identify and mitigate risk. Given the following text:\n{text}\n please find the relevant Azure Services and print them out. \n"    
+    prompt = f"Prompt 1: You are a Microsoft Azure security engineer doing threat model analysis to identify and mitigate risk. Given the following text:\n{text}\n please find the relevant Azure Services and only print them out. \n"    
     
     client = openai.AzureOpenAI(  
         azure_endpoint=openai_endpoint,  
@@ -80,15 +87,126 @@ def generate_list_of_services(text, openai_endpoint, openai_api_key, openai_api_
     recommendations.append(completion)  # Add the completion to the list    
     
     return recommendations  
- 
-    
-def main():    
-    computervision_client = authenticate(computerVisionApiEndpoint, computerVisionApiKey)    
-    extracted_text = extract_text_from_image(computervision_client, imageFilePath)    
-    print(extracted_text)   
-    recommendations = generate_list_of_services(extracted_text, openai_endpoint, openai_api_key, openai_api_version, deployment)
-    print(recommendations)    
+
+def get_security_recommendations(service):  
+    # Authenticate with Azure  
+    credential = DefaultAzureCredential()  
+    resource_graph_client = ResourceGraphClient(credential)  
   
-    
-if __name__ == "__main__":    
-    main()    
+    # Create a query to get security recommendations for the given service  
+    query = f"""  
+    securityresources  
+    | where type == 'microsoft.security/assessments'  
+    | where properties.displayName == '{service}'  
+    | project properties.displayName, properties.status.code, properties.metadata.severity  
+    """  
+    print('BELOW IS THE QUERY')  
+    print(query)  
+    query_request = QueryRequest(  
+        subscriptions=[os.environ["AZURE_SUBSCRIPTION_ID"]],  
+        query=query  
+    )  
+  
+    # Execute the query  
+    results = resource_graph_client.resources(query_request)  
+    print('BELOW IS THE RESULTS')  
+    print(results.data)  
+      
+    # Process the results  
+    recommendations = []  
+    for item in results.data:  
+        print('BELOW IS THE ITEM')  
+        print(item)  
+        recommendations.append({  
+            "Service": item["properties"]["displayName"],  
+            "Status": item["properties"]["status"]["code"],  
+            "Severity": item["properties"]["metadata"]["severity"]  
+        })  
+  
+    return recommendations  
+
+from azure.mgmt.resourcegraph import ResourceGraphClient  
+from azure.mgmt.resourcegraph.models import QueryRequest  
+from azure.identity import DefaultAzureCredential  
+  
+def check_service_in_assessments(service):  
+    # Authenticate with Azure  
+    credential = DefaultAzureCredential()  
+    resource_graph_client = ResourceGraphClient(credential)  
+      
+    # Query to get all distinct displayNames in the security assessments  
+    query = """  
+    securityresources  
+    | where type == 'microsoft.security/assessments'  
+    | distinct properties.displayName  
+    """  
+      
+    query_request = QueryRequest(  
+        subscriptions=[os.environ["AZURE_SUBSCRIPTION_ID"]],  
+        query=query  
+    )  
+  
+    # Execute the query  
+    results = resource_graph_client.resources(query_request)  
+      
+    # Check if the service is in the results  
+    for item in results.data:  
+        if item['properties']['displayName'] == service:  
+            return True  
+  
+    return False  
+
+def get_all_security_assessments():  
+    # Authenticate with Azure  
+    credential = DefaultAzureCredential()  
+    resource_graph_client = ResourceGraphClient(credential)  
+      
+    # Query to get all security assessments  
+    query = """  
+    securityresources  
+    | where type == 'microsoft.security/assessments'  
+    | project properties.displayName  
+    """  
+  
+    query_request = QueryRequest(  
+        subscriptions=[os.environ["AZURE_SUBSCRIPTION_ID"]],  
+        query=query  
+    )  
+  
+    # Execute the query  
+    results = resource_graph_client.resources(query_request)  
+  
+    # Print out the results to see their structure  
+    print(results.data)  
+  
+    # Extract the displayNames from the results  
+    display_names = [item['properties']['displayName'] for item in results.data if 'properties' in item and 'displayName' in item['properties']]  
+    return display_names  
+
+  
+def main():        
+    computervision_client = authenticate(computerVisionApiEndpoint, computerVisionApiKey)        
+    extracted_text = extract_text_from_image(computervision_client, imageFilePath)        
+    print(extracted_text)       
+  
+    # Split the services string into individual services  
+    service_list = generate_list_of_services(extracted_text, openai_endpoint, openai_api_key, openai_api_version, deployment)    
+    individual_services = [service.strip() for service in service_list[0].split(',')]  
+  
+    # Get all security assessments  
+    all_assessments = get_all_security_assessments()  
+  
+    all_recommendations = []    
+    for service in individual_services:    
+        if service in all_assessments:  
+            print(f"Getting recommendations for {service}")  
+            recommendations = get_security_recommendations(service)    
+            all_recommendations.extend(recommendations)  
+        else:  
+            print(f"No assessments found for {service}")  
+  
+    print('BELOW ARE ALL THE RECOMMENDATIONS')    
+    print(all_recommendations)    
+  
+if __name__ == "__main__":        
+    main()   
