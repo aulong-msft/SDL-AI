@@ -9,8 +9,9 @@ from azure.search.documents import SearchClient
 from dotenv import load_dotenv  
 import os  
 from azure.identity import DefaultAzureCredential  
-from azure.mgmt.resourcegraph import ResourceGraphClient  
-from azure.mgmt.resourcegraph.models import QueryRequest  
+import requests
+from msal import PublicClientApplication
+
 
 
 from array import array
@@ -26,6 +27,7 @@ openai_endpoint = os.environ["AZURE_OPENAI_ENDPOINT"]
 openai_api_key = os.environ["AZURE_OPENAI_API_KEY"]   
 deployment = os.environ["CHAT_COMPLETIONS_DEPLOYMENT_NAME"]  
 openai_api_version = os.environ["API_VERSION"]  
+deployment_id = os.environ["DEPLOYMENT_ID"]
 
 # Load environment variables for Azure OpenAI Search
 search_endpoint = os.environ["SEARCH_ENDPOINT"]  
@@ -60,9 +62,10 @@ def extract_text_from_image(computervision_client, imageFilePath):
                 extracted_text += line.text + "\n"    
     return extracted_text  
   
+#Function to generate list of services from extracted text
 def generate_list_of_services(text, openai_endpoint, openai_api_key, openai_api_version, deployment):    
     recommendations = []    
-    prompt = f"Prompt 1: You are a Microsoft Azure security engineer doing threat model analysis to identify and mitigate risk. Given the following text:\n{text}\n please find the relevant Azure Services and only print them out. \n"    
+    prompt = f"Prompt 1: You are a Microsoft Azure security engineer doing threat model analysis to identify and mitigate risk. Given the following text:\n{text}\n please find only Azure Services and only print them out, please change the name to the azure service if its not entirely spelled out. \n"    
     
     client = openai.AzureOpenAI(  
         azure_endpoint=openai_endpoint,  
@@ -87,126 +90,123 @@ def generate_list_of_services(text, openai_endpoint, openai_api_key, openai_api_
     recommendations.append(completion)  # Add the completion to the list    
     
     return recommendations  
-
-def get_security_recommendations(service):  
-    # Authenticate with Azure  
-    credential = DefaultAzureCredential()  
-    resource_graph_client = ResourceGraphClient(credential)  
   
-    # Create a query to get security recommendations for the given service  
-    query = f"""  
-    securityresources  
-    | where type == 'microsoft.security/assessments'  
-    | where properties.displayName == '{service}'  
-    | project properties.displayName, properties.status.code, properties.metadata.severity  
-    """  
-    print('BELOW IS THE QUERY')  
-    print(query)  
-    query_request = QueryRequest(  
-        subscriptions=[os.environ["AZURE_SUBSCRIPTION_ID"]],  
-        query=query  
+def generate_security_recommendations(service, openai_endpoint, openai_api_key, openai_api_version, deployment, search_endpoint, search_key, search_index):        
+    client = openai.AzureOpenAI(      
+        azure_endpoint=openai_endpoint,      
+        api_key=openai_api_key,      
+        api_version=openai_api_version,      
     )  
+    
+    # We'll generate a prompt for each service    
+    prompt = f" what are the security threats and mitigations for the following azure services: {service}"  
+    # Generate the completion with Azure Search data source  
+    completions_response = client.chat.completions.create(      
+        model=deployment,      
+        messages=[  
+            {  
+                "role": "system",  
+                "content": "You are an Azure security engineer, You are analyzing the threat landscape for this service each service and are providing actionable threats and mitigations for each service provided."  
+            },    
+            {      
+                "role": "user",      
+                "content": prompt,      
+            },      
+        ],  
+        extra_body={  
+                "data_sources": [  
+                    {  
+                        "type": "azure_search",  
+                        "parameters": {  
+                            "endpoint": search_endpoint,  
+                            "index_name": search_index,  
+                            "authentication": {  
+                            "type": "api_key",  
+                            "key": search_key  
+                        }  
+                        }  
+                    }  
+                ],
+                "max_tokens": 100,  #The maximum number of tokens to generate (default is 2048).
+                "temperature": 0.5, #Controls the "creativity" of the generated text. Higher values result in more diverse output (default is 1).
+                "top_p": 1.0, #Controls the probability of selecting the next token based on its score (default is 1).
+                "frequency_penalty": 0.0, #Controls the penalty applied to tokens based on their frequency in the training data (default is 0).
+                "presence_penalty": 0.0, #Controls the penalty applied to tokens that are already present in the text (default is 0).
+            }  
+        )  
   
-    # Execute the query  
-    results = resource_graph_client.resources(query_request)  
-    print('BELOW IS THE RESULTS')  
-    print(results.data)  
-      
-    # Process the results  
-    recommendations = []  
-    for item in results.data:  
-        print('BELOW IS THE ITEM')  
-        print(item)  
-        recommendations.append({  
-            "Service": item["properties"]["displayName"],  
-            "Status": item["properties"]["status"]["code"],  
-            "Severity": item["properties"]["metadata"]["severity"]  
-        })  
+    completion = completions_response.choices[0].message.content    
   
-    return recommendations  
+    if "The requested information is not available in the retrieved data" in completion:  
+        # Generate the completion without Azure Search data source  
+        completions_response = client.chat.completions.create(      
+            model=deployment,      
+            messages=[
+                {  
+                "role": "system",  
+                "content": "You are an Azure security engineer, You are analyzing the threat landscape for this service each service and are providing actionable threats and mitigations for each service provided."  
+                },        
+                {
+                    "role": "user",      
+                    "content": f"what are the security threats and mitigations for the following azure services:  {service}?",      
+                },      
+            ]  
+        )  
+  
+        completion = completions_response.choices[0].message.content    
+  
+    print(f"Chatbot: {completion}")        
+    
+    return completion   
 
-from azure.mgmt.resourcegraph import ResourceGraphClient  
-from azure.mgmt.resourcegraph.models import QueryRequest  
-from azure.identity import DefaultAzureCredential  
-  
-def check_service_in_assessments(service):  
-    # Authenticate with Azure  
-    credential = DefaultAzureCredential()  
-    resource_graph_client = ResourceGraphClient(credential)  
-      
-    # Query to get all distinct displayNames in the security assessments  
-    query = """  
-    securityresources  
-    | where type == 'microsoft.security/assessments'  
-    | distinct properties.displayName  
-    """  
-      
-    query_request = QueryRequest(  
-        subscriptions=[os.environ["AZURE_SUBSCRIPTION_ID"]],  
-        query=query  
-    )  
-  
-    # Execute the query  
-    results = resource_graph_client.resources(query_request)  
-      
-    # Check if the service is in the results  
-    for item in results.data:  
-        if item['properties']['displayName'] == service:  
-            return True  
-  
-    return False  
+def setup_byod(deployment_id: str) -> None:
+    """Sets up the OpenAI Python SDK to use your own data for the chat endpoint.
 
-def get_all_security_assessments():  
-    # Authenticate with Azure  
-    credential = DefaultAzureCredential()  
-    resource_graph_client = ResourceGraphClient(credential)  
-      
-    # Query to get all security assessments  
-    query = """  
-    securityresources  
-    | where type == 'microsoft.security/assessments'  
-    | project properties.displayName  
-    """  
-  
-    query_request = QueryRequest(  
-        subscriptions=[os.environ["AZURE_SUBSCRIPTION_ID"]],  
-        query=query  
-    )  
-  
-    # Execute the query  
-    results = resource_graph_client.resources(query_request)  
-  
-    # Print out the results to see their structure  
-    print(results.data)  
-  
-    # Extract the displayNames from the results  
-    display_names = [item['properties']['displayName'] for item in results.data if 'properties' in item and 'displayName' in item['properties']]  
-    return display_names  
+    :param deployment_id: The deployment ID for the model to use with your own data.
 
+    To remove this configuration, simply set openai.requestssession to None.
+    """
+
+    class BringYourOwnDataAdapter(requests.adapters.HTTPAdapter):
+
+        def send(self, request, **kwargs):
+            request.url = f"{openai_endpoint}/openai/deployments/{deployment_id}/extensions/chat/completions?api-version={openai.api_version}"
+            return super().send(request, **kwargs)
+
+    session = requests.Session()
+
+    # Mount a custom adapter which will use the extensions endpoint for any call using the given `deployment_id`
+    session.mount(
+        prefix=f"{openai_endpoint}/openai/deployments/{deployment_id}",
+        adapter=BringYourOwnDataAdapter()
+    )
+
+    openai.requestssession = session
+
+
+def main():    
   
-def main():        
-    computervision_client = authenticate(computerVisionApiEndpoint, computerVisionApiKey)        
-    extracted_text = extract_text_from_image(computervision_client, imageFilePath)        
-    print(extracted_text)       
+    #setup BYOD with Azure Search          
+    setup_byod(deployment_id)  
   
-    # Split the services string into individual services  
-    service_list = generate_list_of_services(extracted_text, openai_endpoint, openai_api_key, openai_api_version, deployment)    
-    individual_services = [service.strip() for service in service_list[0].split(',')]  
+    #Call the Computer Vision functions to read an image with OCR and pass it to OpenAI to get an intell  
+    computervision_client = authenticate(computerVisionApiEndpoint, computerVisionApiKey)            
+    extracted_text = extract_text_from_image(computervision_client, imageFilePath)            
+    service_list = generate_list_of_services(extracted_text, openai_endpoint, openai_api_key, openai_api_version, deployment)        
+    print(service_list)      
   
-    # Get all security assessments  
-    all_assessments = get_all_security_assessments()  
+    # Generate security recommendations for each service  
+    security_recommendations = {}  
+    for service in service_list:  
+        recommendation = generate_security_recommendations(service, openai_endpoint, openai_api_key, openai_api_version, deployment, search_endpoint, search_key, search_index)  
+        security_recommendations[service] = recommendation  
   
-    all_recommendations = []    
-    for service in individual_services:    
-        if service in all_assessments:  
-            print(f"Getting recommendations for {service}")  
-            recommendations = get_security_recommendations(service)    
-            all_recommendations.extend(recommendations)  
-        else:  
-            print(f"No assessments found for {service}")  
+    # Print out the recommendations for each service    
+    for service, recommendation in security_recommendations.items():    
+        print(f" The Service: {service}")    
+        print(f" The Recommendation: {recommendation}")    
+    
+if __name__ == "__main__":            
+    main()    
   
-    print('BELOW ARE ALL THE RECOMMENDATIONS')    
-    print(all_recommendations)    
-  
-if __name__ == "__main__":        
-    main()   
+
