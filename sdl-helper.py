@@ -99,14 +99,14 @@ def generate_security_recommendations(service, openai_endpoint, openai_api_key, 
     )  
     
     # We'll generate a prompt for each service    
-    prompt = f" what are the security threats and mitigations for the following azure services: {service}"  
+    prompt = f" what are the security threats and mitigations for the following microsoft azure services: {service}"  
     # Generate the completion with Azure Search data source  
     completions_response = client.chat.completions.create(      
         model=deployment,      
         messages=[  
             {  
                 "role": "system",  
-                "content": "You are an Azure security engineer, You are analyzing the threat landscape for this service each service and are providing actionable threats and mitigations for each service provided."  
+                "content": "You are an Azure security engineer, You are analyzing the threat landscape for each service and providing security recommendations"  
             },    
             {      
                 "role": "user",      
@@ -130,14 +130,13 @@ def generate_security_recommendations(service, openai_endpoint, openai_api_key, 
                 "max_tokens": 100,  #The maximum number of tokens to generate (default is 2048).
                 "temperature": 0.5, #Controls the "creativity" of the generated text. Higher values result in more diverse output (default is 1).
                 "top_p": 1.0, #Controls the probability of selecting the next token based on its score (default is 1).
-                "frequency_penalty": 0.0, #Controls the penalty applied to tokens based on their frequency in the training data (default is 0).
-                "presence_penalty": 0.0, #Controls the penalty applied to tokens that are already present in the text (default is 0).
             }  
         )  
   
     completion = completions_response.choices[0].message.content    
   
     if "The requested information is not available in the retrieved data" in completion:  
+        print(" !!!!!!!!!!!! The requested information is not available in the retrieved data for the service  " + service)
         # Generate the completion without Azure Search data source  
         completions_response = client.chat.completions.create(      
             model=deployment,      
@@ -150,11 +149,19 @@ def generate_security_recommendations(service, openai_endpoint, openai_api_key, 
                     "role": "user",      
                     "content": f"what are the security threats and mitigations for the following azure services:  {service}?",      
                 },      
-            ]  
+            ],
+            extra_body={ 
+
+            } 
         )  
   
         completion = completions_response.choices[0].message.content    
   
+    print(f"Chatbot: {completion}")        
+    
+    return completion   
+  
+    completion = completions_response.choices[0].message.content       
     print(f"Chatbot: {completion}")        
     
     return completion   
